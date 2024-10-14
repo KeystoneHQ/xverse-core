@@ -9,12 +9,14 @@ import { UtxoCache } from '../../api/utxoCache';
 import { BTC_SEGWIT_PATH_PURPOSE, BTC_TAPROOT_PATH_PURPOSE } from '../../constant';
 import { Transport } from '../../ledger/types';
 import { SeedVault } from '../../seedVault';
-import { type NetworkType, type UTXO } from '../../types';
+import { Account, type NetworkType, type UTXO } from '../../types';
 import { bip32 } from '../../utils/bip32';
 import { getBitcoinDerivationPath, getSegwitDerivationPath, getTaprootDerivationPath } from '../../wallet';
 import { ExtendedUtxo } from './extendedUtxo';
 import { CompilationOptions, SupportedAddressType } from './types';
 import { areByteArraysEqual } from './utils';
+import { TransportWebUSB } from '@keystonehq/hw-transport-webusb';
+import Bitcoin from '@keystonehq/hw-app-bitcoin';
 
 export type InputToSign = {
   address: string;
@@ -24,6 +26,7 @@ export type InputToSign = {
 
 export type SignOptions = {
   ledgerTransport?: Transport;
+  keystoneTransport?: TransportWebUSB;
   inputsToSign?: InputToSign[];
 };
 
@@ -431,6 +434,79 @@ export class LedgerP2wpkhAddressContext extends P2wpkhAddressContext {
   }
 }
 
+export class KeystoneP2wpkhAddressContext extends P2wpkhAddressContext {
+  async addInput(transaction: btc.Transaction, extendedUtxo: ExtendedUtxo, options?: CompilationOptions) {
+    super.addInput(transaction, extendedUtxo, options);
+
+    const utxoTxnHex = await extendedUtxo.hex;
+
+    if (utxoTxnHex) {
+      const nonWitnessUtxo = Buffer.from(utxoTxnHex, 'hex');
+
+      transaction.updateInput(transaction.inputsLength - 1, {
+        nonWitnessUtxo,
+      });
+    }
+  }
+
+  async prepareInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
+    const { keystoneTransport } = options;
+
+    if (!keystoneTransport) {
+      throw new Error('keystoneTransport is required for Keystone signing');
+    }
+
+    const bitcoin = new Bitcoin(keystoneTransport);
+    const masterFingerPrint = await bitcoin.getMasterFingerprint();
+
+    const inputDerivation = [
+      Buffer.from(this._publicKey, 'hex'),
+      {
+        path: btc.bip32Path(this.getDerivationPath()),
+        fingerprint: parseInt(masterFingerPrint, 16),
+      },
+    ] as [Uint8Array, { path: number[]; fingerprint: number }];
+
+    const signIndexes = this.getSignIndexes(transaction, options, this._p2wpkh.script);
+
+    for (const i of Object.keys(signIndexes)) {
+      const input = transaction.getInput(+i);
+      if (input.bip32Derivation?.some((derivation) => areByteArraysEqual(derivation[0], inputDerivation[0]))) {
+        continue;
+      }
+
+      transaction.updateInput(+i, {
+        bip32Derivation: [inputDerivation],
+      });
+    }
+  }
+
+  async signInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
+    const signIndexes = this.getSignIndexes(transaction, options, this._p2wpkh.script);
+
+    if (Object.keys(signIndexes).length === 0) {
+      return;
+    }
+
+    const { keystoneTransport } = options;
+    if (!keystoneTransport) {
+      throw new Error('keystoneTransport is required for Keystone signing');
+    }
+
+    const bitcoin = new Bitcoin(keystoneTransport);
+
+    const psbt = transaction.toPSBT(0);
+    const psbtBase64 = base64.encode(psbt);
+    const signatures = await bitcoin.signPsbt(psbtBase64, '84');
+
+    for (const signature of signatures) {
+      transaction.updateInput(signature[0], {
+        partialSig: [[signature[1].pubkey, signature[1].signature]],
+      });
+    }
+  }
+}
+
 export class P2trAddressContext extends AddressContext {
   protected _p2tr!: ReturnType<typeof btc.p2tr>;
 
@@ -580,6 +656,89 @@ export class LedgerP2trAddressContext extends P2trAddressContext {
     const psbt = transaction.toPSBT(0);
     const psbtBase64 = base64.encode(psbt);
     const signatures = await app.signPsbt(psbtBase64, accountPolicy, null);
+
+    for (const signature of signatures) {
+      transaction.updateInput(signature[0], {
+        tapKeySig: signature[1].signature,
+      });
+    }
+  }
+}
+
+export class KeystoneP2trAddressContext extends P2trAddressContext {
+  async addInput(transaction: btc.Transaction, extendedUtxo: ExtendedUtxo, options?: CompilationOptions) {
+    super.addInput(transaction, extendedUtxo, options);
+
+    const utxoTxnHex = await extendedUtxo.hex;
+
+    if (utxoTxnHex) {
+      const nonWitnessUtxo = Buffer.from(utxoTxnHex, 'hex');
+
+      transaction.updateInput(transaction.inputsLength - 1, {
+        nonWitnessUtxo,
+      });
+    }
+  }
+
+  async prepareInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
+    const { keystoneTransport } = options;
+    if (!keystoneTransport) {
+      throw new Error('keystoneTransport is required for Keystone signing');
+    }
+
+    const bitcoin = new Bitcoin(keystoneTransport);
+    const masterFingerPrint = await bitcoin.getMasterFingerprint();
+
+    const inputDerivation = [
+      this._p2tr.tapInternalKey,
+      {
+        hashes: [],
+        der: {
+          path: btc.bip32Path(this.getDerivationPath()),
+          fingerprint: parseInt(masterFingerPrint, 16),
+        },
+      },
+    ] as [
+      Uint8Array,
+      {
+        hashes: Uint8Array[];
+        der: {
+          fingerprint: any;
+          path: any;
+        };
+      },
+    ];
+
+    const signIndexes = this.getSignIndexes(transaction, options, this._p2tr.script);
+
+    for (const i of Object.keys(signIndexes)) {
+      const input = transaction.getInput(+i);
+      if (input.bip32Derivation?.some((derivation) => areByteArraysEqual(derivation[0], inputDerivation[0]))) {
+        continue;
+      }
+
+      transaction.updateInput(+i, {
+        tapBip32Derivation: [inputDerivation],
+      });
+    }
+  }
+
+  async signInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
+    const signIndexes = this.getSignIndexes(transaction, options, this._p2tr.script);
+
+    if (Object.keys(signIndexes).length === 0) {
+      return;
+    }
+
+    const { keystoneTransport } = options;
+    if (!keystoneTransport) {
+      throw new Error('keystoneTransport is required for Keystone signing');
+    }
+
+    const bitcoin = new Bitcoin(keystoneTransport);
+    const psbt = transaction.toPSBT(0);
+    const psbtBase64 = base64.encode(psbt);
+    const signatures = await bitcoin.signPsbt(psbtBase64, '86');
 
     for (const signature of signatures) {
       transaction.updateInput(signature[0], {

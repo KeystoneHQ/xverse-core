@@ -1,7 +1,8 @@
 import * as btc from '@scure/btc-signer';
 import { Transport } from '../../ledger';
-import { Artifact, RareSatsType } from '../../types';
+import { Account, Artifact, RareSatsType } from '../../types';
 import { ExtendedDummyUtxo, ExtendedUtxo } from './extendedUtxo';
+import { TransportWebUSB } from '@keystonehq/hw-transport-webusb';
 
 type ScriptOpArray = Parameters<typeof btc.Script.encode>[0];
 
@@ -78,6 +79,7 @@ export type TransactionOptions = {
 export type CompilationOptions = {
   rbfEnabled?: boolean;
   ledgerTransport?: Transport;
+  keystoneTransport?: TransportWebUSB;
 };
 
 export type TransactionSummary = {
