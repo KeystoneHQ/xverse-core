@@ -23,10 +23,9 @@ function getPathForNetwork(bipType: number, network: Network) {
   }
 }
 
-function getNativeSegwitKeyAndAddress(root: BIP32Interface, { path = "m/84'/0'/0'/0/0", network = defaultNetwork }) {
-  const bipType = 84;
-  if (path.startsWith('m')) path = getPathForNetwork(bipType, network);
-  const child = root.derivePath(path);
+function getNativeSegwitKeyAndAddress(root: BIP32Interface, { subPath = '0/0', network = defaultNetwork }) {
+  const child = root.derivePath(subPath);
+
   const { address, pubkey } = payments.p2wpkh({
     pubkey: child.publicKey,
     network,
@@ -46,10 +45,8 @@ function getNativeSegwitKeyAndAddress(root: BIP32Interface, { path = "m/84'/0'/0
   };
 }
 
-function getTaprootPubkeyAndAddress(root: BIP32Interface, { path = "m/86'/0'/0'/0/0", network = defaultNetwork }) {
-  const bipType = 86;
-  if (path.startsWith('m')) path = getPathForNetwork(bipType, network);
-  const child = root.derivePath(path);
+function getTaprootPubkeyAndAddress(root: BIP32Interface, { subPath = '0/0', network = defaultNetwork }) {
+  const child = root.derivePath(subPath);
 
   const pubkey = child.publicKey;
   const tweakedPubkey = ecc.xOnlyPointFromPoint(pubkey);
@@ -88,7 +85,7 @@ export async function importNativeSegwitAccountFromKeystone({
   const nativeSegwitZpub = await bitcoin.getExtendedPublicKey(getPathForNetwork(84, network));
   const nativeSegwitXpub = convertZpubToXpub(nativeSegwitZpub);
   const nativeSegwitRoot = bip32.fromBase58(nativeSegwitXpub, network);
-  const nativeSegwit = getNativeSegwitKeyAndAddress(nativeSegwitRoot, { path: `0/${addressIndex}`, network });
+  const nativeSegwit = getNativeSegwitKeyAndAddress(nativeSegwitRoot, { subPath: `0/${addressIndex}`, network });
 
   return {
     xpub: nativeSegwitXpub,
@@ -106,7 +103,7 @@ export async function importTaprootAccountFromKeystone({
 
   const taprootXpub = await bitcoin.getExtendedPublicKey(getPathForNetwork(86, network));
   const taprootRoot = bip32.fromBase58(taprootXpub, network);
-  const taproot = getTaprootPubkeyAndAddress(taprootRoot, { path: `0/${addressIndex}`, network });
+  const taproot = getTaprootPubkeyAndAddress(taprootRoot, { subPath: `0/${addressIndex}`, network });
 
   return {
     xpub: taprootXpub,
