@@ -194,6 +194,13 @@ export async function signMessageKeystone({
 }): Promise<SignedMessage> {
   const app = new Bitcoin(transport, mfp);
   const { type } = getAddressInfo(address);
+
+  const deviceMfp = await app.getMasterFingerprint();
+
+  if (mfp !== deviceMfp) {
+    throw new Error('mfp does not match device mfp');
+  }
+
   // if protocol isn't specified, we default to bip322 for both address types
   const protocolToSign = protocol || MessageSigningProtocols.BIP322;
   if (protocolToSign === MessageSigningProtocols.ECDSA) {
