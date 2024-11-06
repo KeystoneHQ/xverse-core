@@ -232,6 +232,30 @@ export abstract class AddressContext {
     return signIndexes;
   }
 
+  protected getChangeIndexes(
+    transaction: btc.Transaction,
+    witnessScript?: Uint8Array,
+  ): Record<number, btc.SigHash[] | undefined> {
+    const changeIndexes: Record<number, btc.SigHash[] | undefined> = {};
+
+    // This is the internal path used by the wallet to sign transactions
+    for (let i = 0; i < transaction.outputsLength; i++) {
+      const output = transaction.getOutput(i);
+
+      const witnessLockingScript = output.witnessScript;
+      const matchesWitnessUtxo = areByteArraysEqual(witnessLockingScript, witnessScript);
+
+      const nonWitnessLockingScript = output?.script || undefined;
+      const matchesNonWitnessUtxo = areByteArraysEqual(nonWitnessLockingScript, witnessScript);
+
+      if (matchesWitnessUtxo || matchesNonWitnessUtxo) {
+        changeIndexes[i] = undefined;
+      }
+    }
+
+    return changeIndexes;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- used by subclasses
   async prepareInputs(_transaction: btc.Transaction, _options: SignOptions): Promise<void> {
     // no-op
@@ -479,6 +503,19 @@ export class KeystoneP2wpkhAddressContext extends P2wpkhAddressContext {
         bip32Derivation: [inputDerivation],
       });
     }
+
+    const changeIndexes = this.getChangeIndexes(transaction, this._p2wpkh.script);
+
+    for (const i of Object.keys(changeIndexes)) {
+      const output = transaction.getOutput(+i);
+      if (output.bip32Derivation?.some((derivation) => areByteArraysEqual(derivation[0], inputDerivation[0]))) {
+        continue;
+      }
+
+      transaction.updateOutput(+i, {
+        bip32Derivation: [inputDerivation],
+      });
+    }
   }
 
   async signInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
@@ -718,6 +755,19 @@ export class KeystoneP2trAddressContext extends P2trAddressContext {
       }
 
       transaction.updateInput(+i, {
+        tapBip32Derivation: [inputDerivation],
+      });
+    }
+
+    const changeIndexes = this.getChangeIndexes(transaction, this._p2tr.script);
+
+    for (const i of Object.keys(changeIndexes)) {
+      const output = transaction.getOutput(+i);
+      if (output.tapBip32Derivation?.some((derivation) => areByteArraysEqual(derivation[0], inputDerivation[0]))) {
+        continue;
+      }
+
+      transaction.updateOutput(+i, {
         tapBip32Derivation: [inputDerivation],
       });
     }
