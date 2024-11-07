@@ -78,6 +78,7 @@ export type TransactionOptions = {
 
 export type CompilationOptions = {
   rbfEnabled?: boolean;
+  selectedAccount?: Account;
   ledgerTransport?: Transport;
   keystoneTransport?: TransportWebUSB;
 };

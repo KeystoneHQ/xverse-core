@@ -41,7 +41,7 @@ const createMessageSignature = async (
     ...inputArgs,
   });
   psbtToSign.addOutput({ script: Buffer.from('6a', 'hex'), value: 0 });
-  const signatures = await app.signPsbt(psbtToSign.toBase64(), '86');
+  const signatures = await app.signPsbt(psbtToSign.toBase64());
   for (const signature of signatures) {
     if (isSegwit) {
       psbtToSign.updateInput(signature[0], {
@@ -78,8 +78,10 @@ const createSegwitBip322Signature = async ({
   networkType: NetworkType;
 }): Promise<SignedMessage> => {
   const coinType = getCoinType(networkType);
-  const masterFingerPrint = await app.getMasterFingerprint();
 
+  if (!app.mfp) {
+    throw new Error('not found keystoneBitcoin mfp');
+  }
   if (!xpub) {
     throw new Error('not found keystone extendedPublicKey');
   }
@@ -87,7 +89,7 @@ const createSegwitBip322Signature = async ({
   const inputDerivation: Bip32Derivation = {
     path: `${BTC_SEGWIT_PATH_PURPOSE}${coinType}'/0'/0/${addressIndex}`,
     pubkey: publicKey,
-    masterFingerprint: Buffer.from(masterFingerPrint, 'hex'),
+    masterFingerprint: Buffer.from(app.mfp, 'hex'),
   };
   return createMessageSignature(
     app,
@@ -114,8 +116,10 @@ const createTaprootBip322Signature = async ({
   networkType: NetworkType;
 }): Promise<SignedMessage> => {
   const coinType = getCoinType(networkType);
-  const masterFingerPrint = await app.getMasterFingerprint();
 
+  if (!app.mfp) {
+    throw new Error('not found keystoneBitcoin mfp');
+  }
   if (!xpub) {
     throw new Error('not found keystone extendedPublicKey');
   }
@@ -124,7 +128,7 @@ const createTaprootBip322Signature = async ({
   const inputDerivation: TapBip32Derivation = {
     path: `${BTC_TAPROOT_PATH_PURPOSE}${coinType}'/0'/0/${addressIndex}`,
     pubkey: internalPubkey,
-    masterFingerprint: Buffer.from(masterFingerPrint, 'hex'),
+    masterFingerprint: Buffer.from(app.mfp, 'hex'),
     leafHashes: [],
   };
   return createMessageSignature(
@@ -194,12 +198,6 @@ export async function signMessageKeystone({
 }): Promise<SignedMessage> {
   const app = new Bitcoin(transport, mfp);
   const { type } = getAddressInfo(address);
-
-  const deviceMfp = await app.getMasterFingerprint();
-
-  if (mfp !== deviceMfp) {
-    throw new Error('mfp does not match device mfp');
-  }
 
   // if protocol isn't specified, we default to bip322 for both address types
   const protocolToSign = protocol || MessageSigningProtocols.BIP322;

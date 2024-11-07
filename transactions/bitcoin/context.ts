@@ -1,4 +1,5 @@
 import { base64, hex } from '@scure/base';
+import * as bitcoin from 'bitcoinjs-lib';
 import * as btc from '@scure/btc-signer';
 import { Mutex } from 'async-mutex';
 import { isAxiosError } from 'axios';
@@ -16,6 +17,7 @@ import { ExtendedUtxo } from './extendedUtxo';
 import { CompilationOptions, SupportedAddressType } from './types';
 import { areByteArraysEqual } from './utils';
 import { TransportWebUSB } from '@keystonehq/hw-transport-webusb';
+import { PartialSignature } from '@keystonehq/hw-app-bitcoin/lib/psbt';
 import Bitcoin from '@keystonehq/hw-app-bitcoin';
 
 export type InputToSign = {
@@ -27,6 +29,7 @@ export type InputToSign = {
 export type SignOptions = {
   ledgerTransport?: Transport;
   keystoneTransport?: TransportWebUSB;
+  selectedAccount?: Account;
   inputsToSign?: InputToSign[];
 };
 
@@ -474,14 +477,13 @@ export class KeystoneP2wpkhAddressContext extends P2wpkhAddressContext {
   }
 
   async prepareInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
-    const { keystoneTransport } = options;
+    const { selectedAccount } = options;
 
-    if (!keystoneTransport) {
-      throw new Error('keystoneTransport is required for Keystone signing');
+    const masterFingerPrint = selectedAccount?.masterPubKey;
+
+    if (!masterFingerPrint) {
+      throw new Error('masterFingerPrint is required');
     }
-
-    const bitcoin = new Bitcoin(keystoneTransport);
-    const masterFingerPrint = await bitcoin.getMasterFingerprint();
 
     const inputDerivation = [
       Buffer.from(this._publicKey, 'hex'),
@@ -530,17 +532,64 @@ export class KeystoneP2wpkhAddressContext extends P2wpkhAddressContext {
       throw new Error('keystoneTransport is required for Keystone signing');
     }
 
-    const bitcoin = new Bitcoin(keystoneTransport);
+    const keystoneBitcoin = new Bitcoin(keystoneTransport);
 
     const psbt = transaction.toPSBT(0);
     const psbtBase64 = base64.encode(psbt);
-    const signatures = await bitcoin.signPsbt(psbtBase64, '84');
 
-    for (const signature of signatures) {
+    const cleanedPsbtBase64 = this.cleanPsbtInputSig(psbtBase64);
+
+    const signatures = await keystoneBitcoin.signPsbt(cleanedPsbtBase64);
+
+    const cleanedSignatures = this.cleanPsbtSig(psbtBase64, signatures);
+
+    for (const signature of cleanedSignatures) {
       transaction.updateInput(signature[0], {
         partialSig: [[signature[1].pubkey, signature[1].signature]],
       });
     }
+  }
+
+  cleanPsbtInputSig(psbt: string) {
+    const path = 86;
+
+    const psbtObj = bitcoin.Psbt.fromBase64(psbt);
+    const clearInputs = psbtObj.data.inputs
+      .map((it, index) => {
+        const hasPath = [it.tapBip32Derivation, it.bip32Derivation]
+          .filter((f) => f)
+          .some((d) => d?.[0]?.path.startsWith(`m/${path}`));
+        if (hasPath) {
+          return null;
+        }
+        return index;
+      })
+      .filter((it) => it);
+    for (const index of Object.values(clearInputs)) {
+      psbtObj.data.inputs[index!].partialSig = [];
+    }
+
+    return psbtObj.toBase64();
+  }
+
+  cleanPsbtSig(psbtBase64: string, signatures: [number, PartialSignature][]) {
+    const results = [];
+    const path = 84;
+
+    const tx = bitcoin.Psbt.fromBase64(psbtBase64);
+    for (let i = 0; i < tx.txInputs.length; i++) {
+      const input = tx.data.inputs[i];
+
+      const hasPath = [input.tapBip32Derivation, input.bip32Derivation]
+        .filter((it) => it)
+        .some((d) => d?.[0]?.path?.startsWith(`m/${path}`));
+
+      if (!hasPath) {
+        continue;
+      }
+      results.push(signatures[i]);
+    }
+    return results;
   }
 }
 
@@ -718,13 +767,13 @@ export class KeystoneP2trAddressContext extends P2trAddressContext {
   }
 
   async prepareInputs(transaction: btc.Transaction, options: SignOptions): Promise<void> {
-    const { keystoneTransport } = options;
-    if (!keystoneTransport) {
-      throw new Error('keystoneTransport is required for Keystone signing');
-    }
+    const { selectedAccount } = options;
 
-    const bitcoin = new Bitcoin(keystoneTransport);
-    const masterFingerPrint = await bitcoin.getMasterFingerprint();
+    const masterFingerPrint = selectedAccount?.masterPubKey;
+
+    if (!masterFingerPrint) {
+      throw new Error('masterFingerPrint is required');
+    }
 
     const inputDerivation = [
       this._p2tr.tapInternalKey,
@@ -785,16 +834,64 @@ export class KeystoneP2trAddressContext extends P2trAddressContext {
       throw new Error('keystoneTransport is required for Keystone signing');
     }
 
-    const bitcoin = new Bitcoin(keystoneTransport);
+    const keystoneBitcoin = new Bitcoin(keystoneTransport);
     const psbt = transaction.toPSBT(0);
     const psbtBase64 = base64.encode(psbt);
-    const signatures = await bitcoin.signPsbt(psbtBase64, '86');
 
-    for (const signature of signatures) {
+    const cleanedPsbtBase64 = this.cleanPsbtInputSig(psbtBase64);
+
+    const signatures = await keystoneBitcoin.signPsbt(cleanedPsbtBase64);
+
+    const cleanedSignatures = this.cleanPsbtSig(psbtBase64, signatures);
+
+    for (const signature of cleanedSignatures) {
       transaction.updateInput(signature[0], {
         tapKeySig: signature[1].signature,
       });
     }
+  }
+
+  cleanPsbtInputSig(psbt: string) {
+    const path = 86;
+
+    const psbtObj = bitcoin.Psbt.fromBase64(psbt);
+    const clearInputs = psbtObj.data.inputs
+      .map((it, index) => {
+        const hasPath = [it.tapBip32Derivation, it.bip32Derivation]
+          .filter((f) => f)
+          .some((d) => d?.[0]?.path.startsWith(`m/${path}`));
+        if (hasPath) {
+          return null;
+        }
+        return index;
+      })
+      .filter((it) => it);
+    for (const index of Object.values(clearInputs)) {
+      psbtObj.data.inputs[index!].partialSig = [];
+    }
+
+    return psbtObj.toBase64();
+  }
+
+  cleanPsbtSig(psbt: string, signatures: [number, PartialSignature][]) {
+    const results = [];
+    const path = 86;
+
+    const tx = bitcoin.Psbt.fromBase64(psbt);
+
+    for (let i = 0; i < tx.txInputs.length; i++) {
+      const input = tx.data.inputs[i];
+
+      const hasPath = [input.tapBip32Derivation, input.bip32Derivation]
+        .filter((it) => it)
+        .some((d) => d?.[0]?.path?.startsWith(`m/${path}`));
+
+      if (!hasPath) {
+        continue;
+      }
+      results.push(signatures[i]);
+    }
+    return results;
   }
 }
 
